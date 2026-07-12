@@ -36,6 +36,12 @@ project(ds5-bridge C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
+# PIO-USB software host (donor Xbox controller port) — provides `pico_pio_usb`.
+add_subdirectory(lib/Pico-PIO-USB)
+if(NOT PICO_TINYUSB_PATH)
+    set(PICO_TINYUSB_PATH ${PICO_SDK_PATH}/lib/tinyusb)
+endif()
+
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(ds5-bridge
@@ -109,4 +115,82 @@ target_link_libraries(ds5-bridge
 )
 
 pico_add_extra_outputs(ds5-bridge)
+
+# ---- Hardware bring-up smoke test (LED + I2C OLED) ----
+# Minimal target: does not pull in BT / USB / Opus. Build with:  ninja bringup_test
+add_executable(bringup_test
+        src/bringup/bringup_test.cpp
+        src/bringup/ssd1306.cpp
+)
+target_include_directories(bringup_test PRIVATE src/bringup)
+pico_set_program_name(bringup_test "bringup_test")
+pico_enable_stdio_uart(bringup_test 1)
+pico_enable_stdio_usb(bringup_test 0)
+target_link_libraries(bringup_test
+        pico_stdlib
+        pico_cyw43_arch_none
+        hardware_i2c
+)
+pico_add_extra_outputs(bringup_test)
+
+# ---- PIO-USB host bring-up test (enumerate a USB device, show VID/PID) ----
+# Build with:  ninja usbhost_test
+add_executable(usbhost_test
+        src/usbhost/usbhost_test.cpp
+        src/bringup/ssd1306.cpp
+        ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
+)
+target_include_directories(usbhost_test PRIVATE src/usbhost src/bringup)
+pico_set_program_name(usbhost_test "usbhost_test")
+pico_enable_stdio_uart(usbhost_test 1)
+pico_enable_stdio_usb(usbhost_test 0)   # SDK forbids stdio-USB alongside a TinyUSB host
+target_compile_definitions(usbhost_test PRIVATE CFG_TUH_RPI_PIO_USB=1)
+target_link_libraries(usbhost_test
+        pico_stdlib
+        pico_multicore
+        tinyusb_host
+        pico_pio_usb
+        hardware_i2c
+        hardware_dma
+)
+pico_add_extra_outputs(usbhost_test)
+
+# ---- GIP descriptor probe (dump a device's descriptors; clone the controller) ----
+add_executable(gip_probe
+        src/gipprobe/gip_probe.cpp
+        src/bringup/ssd1306.cpp
+        ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
+)
+target_include_directories(gip_probe PRIVATE src/gipprobe src/usbhost src/bringup)
+pico_set_program_name(gip_probe "gip_probe")
+pico_enable_stdio_uart(gip_probe 1)
+pico_enable_stdio_usb(gip_probe 0)
+target_compile_definitions(gip_probe PRIVATE CFG_TUH_RPI_PIO_USB=1)
+target_link_libraries(gip_probe
+        pico_stdlib
+        pico_multicore
+        tinyusb_host
+        pico_pio_usb
+        hardware_i2c
+        hardware_dma
+)
+pico_add_extra_outputs(gip_probe)
+
+# ---- Xbox controller DEVICE spoof (enumerate as Xbox pad + capture host GIP) ----
+add_executable(xbox_dev
+        src/xbox/xbox_dev.cpp
+        src/xbox/xbox_descriptors.c
+        src/bringup/ssd1306.cpp
+)
+target_include_directories(xbox_dev PRIVATE src/xbox src/bringup)
+pico_set_program_name(xbox_dev "xbox_dev")
+pico_enable_stdio_uart(xbox_dev 1)
+pico_enable_stdio_usb(xbox_dev 0)
+target_link_libraries(xbox_dev
+        pico_stdlib
+        tinyusb_device
+        tinyusb_board
+        hardware_i2c
+)
+pico_add_extra_outputs(xbox_dev)
 
