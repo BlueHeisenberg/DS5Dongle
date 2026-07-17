@@ -241,6 +241,30 @@ target_link_libraries(gip_hostdrv
 )
 pico_add_extra_outputs(gip_hostdrv)
 
+# ---- Passthrough relay: DualSense/controller -> Xbox (device + host + relay) ----
+add_executable(passthrough
+        src/passthru/passthru.cpp
+        src/xbox/xbox_descriptors.c
+        src/gipdrv/gip_host.c
+        src/bringup/ssd1306.cpp
+        ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
+)
+target_include_directories(passthrough PRIVATE src/passthru src/gipdrv src/bringup ${PICO_TINYUSB_PATH}/src)
+pico_set_program_name(passthrough "passthrough")
+pico_enable_stdio_uart(passthrough 1)
+pico_enable_stdio_usb(passthrough 0)
+target_compile_definitions(passthrough PRIVATE CFG_TUH_RPI_PIO_USB=1)
+target_link_libraries(passthrough
+        pico_stdlib
+        pico_multicore
+        tinyusb_device
+        tinyusb_host
+        pico_pio_usb
+        hardware_i2c
+        hardware_dma
+)
+pico_add_extra_outputs(passthrough)
+
 # ---- Xbox controller DEVICE spoof (enumerate as Xbox pad + capture host GIP) ----
 add_executable(xbox_dev
         src/xbox/xbox_dev.cpp

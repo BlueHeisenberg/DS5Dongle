@@ -19,7 +19,18 @@ static struct {
 
 static uint8_t g_epin[64];
 static uint8_t g_epout[64];
+static uint8_t g_raw[64];
 static uint8_t g_seq = 1;
+static bool    g_relay = false;
+
+void gip_host_set_relay(bool on) { g_relay = on; }
+bool gip_host_ready(void) { return gip.active; }
+
+bool gip_host_send_raw(const uint8_t *pkt, uint16_t len) {
+    if (!gip.active || len == 0 || len > sizeof(g_raw)) return false;
+    memcpy(g_raw, pkt, len);
+    return usbh_edpt_xfer(gip.daddr, gip.ep_out, g_raw, len);
+}
 
 // Weak defaults so the app can override.
 TU_ATTR_WEAK void gip_host_rx(const uint8_t *data, uint16_t len) { (void) data; (void) len; }
@@ -81,8 +92,10 @@ static uint16_t gip_open(uint8_t rhport, uint8_t daddr,
 static bool gip_set_config(uint8_t daddr, uint8_t itf_num) {
     if (gip.active && gip.daddr == daddr && gip.itf_num == itf_num) {
         usbh_edpt_xfer(daddr, gip.ep_in, g_epin, gip.epin_size); // start polling IN
-        uint8_t on = 0x00;
-        gip_host_send(0x05, 0x20, &on, 1);                        // GIP power on
+        if (!g_relay) {                                           // in relay mode the console drives init
+            uint8_t on = 0x00;
+            gip_host_send(0x05, 0x20, &on, 1);                    // GIP power on
+        }
         gip_host_mounted(daddr);
     }
     usbh_driver_set_config_complete(daddr, itf_num);

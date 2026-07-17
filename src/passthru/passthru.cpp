@@ -1,0 +1,178 @@
+//
+// DualSense -> Xbox passthrough, v1: TRANSPARENT GIP RELAY.
+//
+//   Xbox console  <--native USB (device, GIP)-->  Pico  <--PIO-USB (host)-->  real controller
+//
+// Every GIP packet the console sends is forwarded verbatim to the controller,
+// and every packet the controller sends is forwarded back to the console. That
+// includes the XSM3 auth (0x06) — the genuine controller's chip answers it, we
+// just relay. This proves the auth relay end-to-end using the real controller's
+// own input. Once this is accepted by the console, v2 substitutes DualSense
+// input for the controller's INPUT (0x20) reports.
+//
+// Cross-core: device runs on core0 (tud), host on core1 (tuh). Two SPSC ring
+// buffers carry framed packets between cores.
+//
+#include <cstdio>
+#include <cstring>
+#include "pico/stdlib.h"
+#include "pico/multicore.h"
+#include "pico/bootrom.h"
+#include "hardware/clocks.h"
+#include "hardware/i2c.h"
+#include "pio_usb.h"
+#include "tusb.h"
+#include "ssd1306.h"
+#include "gip_host.h"
+
+#define I2C_PORT   i2c1
+#define PIN_SDA    10
+#define PIN_SCL    11
+#define OLED_ADDR  0x3C
+#define OLED_H     32
+#define PIN_USB_DP 2
+
+static inline uint32_t now_ms() { return to_ms_since_boot(get_absolute_time()); }
+
+//--------------------------------------------------------------------+
+// Single-producer / single-consumer ring of framed packets: [u16 len][bytes]
+//--------------------------------------------------------------------+
+#define RING_SZ 4096
+typedef struct {
+    uint8_t buf[RING_SZ];
+    volatile uint32_t head; // producer writes
+    volatile uint32_t tail; // consumer reads
+} ring_t;
+
+static ring_t g_c2h; // console -> controller
+static ring_t g_h2c; // controller -> console
+
+static inline uint32_t ring_used(const ring_t *r) { return r->head - r->tail; }
+
+static bool ring_push(ring_t *r, const uint8_t *data, uint16_t len) {
+    if (len == 0 || len > 64) return false;
+    if (RING_SZ - ring_used(r) < (uint32_t) (len + 2)) return false; // full
+    uint32_t h = r->head;
+    r->buf[h++ % RING_SZ] = (uint8_t) (len & 0xFF);
+    r->buf[h++ % RING_SZ] = (uint8_t) (len >> 8);
+    for (uint16_t i = 0; i < len; i++) r->buf[h++ % RING_SZ] = data[i];
+    __dmb();
+    r->head = h;
+    return true;
+}
+
+// Returns packet length (0 if empty). Copies up to max bytes into out.
+static uint16_t ring_pop(ring_t *r, uint8_t *out, uint16_t max) {
+    if (ring_used(r) < 2) return 0;
+    uint32_t t = r->tail;
+    uint16_t len = (uint16_t) (r->buf[t % RING_SZ] | (r->buf[(t + 1) % RING_SZ] << 8));
+    if (ring_used(r) < (uint32_t) (len + 2)) return 0; // partial (shouldn't happen)
+    t += 2;
+    for (uint16_t i = 0; i < len; i++) {
+        uint8_t b = r->buf[t++ % RING_SZ];
+        if (i < max) out[i] = b;
+    }
+    __dmb();
+    r->tail = t;
+    return len;
+}
+
+static volatile uint32_t g_n_c2h = 0, g_n_h2c = 0;
+static volatile bool g_ctrl_up = false, g_console_up = false;
+
+//--------------------------------------------------------------------+
+// Controller -> console  (host side, core1 context)
+//--------------------------------------------------------------------+
+extern "C" void gip_host_rx(const uint8_t *data, uint16_t len) {
+    ring_push(&g_h2c, data, len);
+    g_n_h2c++;
+}
+extern "C" void gip_host_mounted(uint8_t daddr) { (void) daddr; g_ctrl_up = true; }
+
+//--------------------------------------------------------------------+
+// Console -> controller  (device side, core0 context)
+//--------------------------------------------------------------------+
+extern "C" void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint32_t bufsize) {
+    (void) itf; (void) buffer; (void) bufsize;
+    uint8_t pkt[64];
+    uint32_t n = tud_vendor_read(pkt, sizeof pkt);
+    if (n) { ring_push(&g_c2h, pkt, (uint16_t) n); g_n_c2h++; }
+}
+extern "C" void tud_mount_cb(void)   { g_console_up = true; }
+extern "C" void tud_umount_cb(void)  { g_console_up = false; }
+
+//--------------------------------------------------------------------+
+// core1: PIO-USB host + drain console->controller ring to the controller
+//--------------------------------------------------------------------+
+static void core1_main() {
+    sleep_ms(10);
+    pio_usb_configuration_t pcfg = PIO_USB_DEFAULT_CONFIG;
+    pcfg.pin_dp = PIN_USB_DP;
+    tuh_configure(BOARD_TUH_RHPORT, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pcfg);
+    gip_host_set_relay(true);            // console drives GIP init; we don't inject power-on
+    tuh_init(BOARD_TUH_RHPORT);
+
+    uint8_t pkt[64];
+    while (true) {
+        tuh_task();
+        if (gip_host_ready()) {
+            uint16_t n = ring_pop(&g_c2h, pkt, sizeof pkt);
+            if (n) gip_host_send_raw(pkt, n);
+        }
+    }
+}
+
+int main() {
+    set_sys_clock_khz(120000, true);
+
+    // DEVICE stack (to console) on core0.
+    tusb_rhport_init_t dev_init = { .role = TUSB_ROLE_DEVICE, .speed = TUSB_SPEED_FULL };
+    tusb_init(BOARD_TUD_RHPORT, &dev_init);
+
+    stdio_init_all();
+    sleep_ms(200);
+    printf("\n[pt] passthrough relay @120MHz  console<->pico<->controller\n");
+
+    i2c_init(I2C_PORT, 400 * 1000);
+    gpio_set_function(PIN_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(PIN_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(PIN_SDA); gpio_pull_up(PIN_SCL);
+    SSD1306 oled(I2C_PORT, OLED_ADDR, OLED_H);
+    bool oled_ok = oled.init();
+
+    multicore_reset_core1();
+    multicore_launch_core1(core1_main);
+
+    uint8_t pkt[64];
+    uint32_t last_hb = 0;
+    char l0[22], l1[22], l2[22];
+    while (true) {
+        int c = getchar_timeout_us(0);
+        if (c == 'b' || c == 'B') { printf("[pt] BOOTSEL\n"); sleep_ms(20); reset_usb_boot(0, 0); }
+
+        tud_task();
+
+        // Drain controller->console ring to the console.
+        if (tud_vendor_mounted()) {
+            uint16_t n = ring_pop(&g_h2c, pkt, sizeof pkt);
+            if (n) { tud_vendor_write(pkt, n); tud_vendor_write_flush(); }
+        }
+
+        uint32_t now = now_ms();
+        if (now - last_hb > 1000) {
+            last_hb = now;
+            printf("[pt] hb console=%d ctrl=%d c2h=%lu h2c=%lu\n",
+                   g_console_up, g_ctrl_up, (unsigned long) g_n_c2h, (unsigned long) g_n_h2c);
+        }
+        if (oled_ok) {
+            oled.clear(false);
+            snprintf(l0, sizeof l0, "PASSTHRU RELAY");
+            snprintf(l1, sizeof l1, "XBOX%s CTRL%s", g_console_up ? "+" : "-", g_ctrl_up ? "+" : "-");
+            snprintf(l2, sizeof l2, "->%lu <-%lu", (unsigned long) g_n_c2h, (unsigned long) g_n_h2c);
+            oled.draw_text(2, 2, l0, 1);
+            oled.draw_text(2, 13, l1, 1);
+            oled.draw_text(2, 23, l2, 1);
+            oled.show();
+        }
+    }
+}
