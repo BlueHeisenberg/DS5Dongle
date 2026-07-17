@@ -245,12 +245,13 @@ pico_add_extra_outputs(gip_hostdrv)
 add_executable(passthrough
         src/passthru/passthru.cpp
         src/xbox/xbox_descriptors.c
+        src/xbox/gip_dev.c
         src/gipdrv/gip_host.c
         src/bringup/ssd1306.cpp
         src/bt.cpp
         ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
 )
-target_include_directories(passthrough PRIVATE src/passthru src/gipdrv src/bringup src ${PICO_TINYUSB_PATH}/src ${PICO_TINYUSB_PATH}/hw)
+target_include_directories(passthrough PRIVATE src/passthru src/gipdrv src/xbox src/bringup src ${PICO_TINYUSB_PATH}/src ${PICO_TINYUSB_PATH}/hw)
 pico_set_program_name(passthrough "passthrough")
 pico_enable_stdio_uart(passthrough 1)
 pico_enable_stdio_usb(passthrough 0)

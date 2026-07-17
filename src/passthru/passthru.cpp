@@ -25,6 +25,7 @@
 #include "pico/cyw43_arch.h"
 #include "ssd1306.h"
 #include "gip_host.h"
+#include "gip_dev.h"
 #include "ds_to_gip.h"
 #include "bt.h"
 
@@ -119,8 +120,7 @@ static void send_input_to_console() {
     uint8_t pkt[4 + 14];
     pkt[0] = 0x20; pkt[1] = 0x00; pkt[2] = g_in_seq++; pkt[3] = 14;
     dualsense_to_gip_input(g_ds, pkt + 4);
-    tud_vendor_write(pkt, sizeof pkt);
-    tud_vendor_write_flush();
+    gip_dev_send(pkt, sizeof pkt);
 }
 
 //--------------------------------------------------------------------+
@@ -159,16 +159,13 @@ static void ds_send_feedback(uint8_t motorL, uint8_t motorR, uint8_t trigL, uint
 }
 
 //--------------------------------------------------------------------+
-// Console -> controller  (device side, core0 context)
+// Console -> us  (custom device driver, core0 context)
 //--------------------------------------------------------------------+
-extern "C" void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint32_t bufsize) {
-    (void) itf; (void) buffer; (void) bufsize;
-    uint8_t pkt[64];
-    uint32_t n = tud_vendor_read(pkt, sizeof pkt);
+extern "C" void gip_dev_rx(const uint8_t *pkt, uint16_t n) {
     if (!n) return;
 
     // Relay the packet to the controller.
-    ring_push(&g_c2h, pkt, (uint16_t) n);
+    ring_push(&g_c2h, pkt, n);
     g_n_c2h++;
 
     // GIP rumble (0x09): also drive the DualSense. Payload (after 4B header):
@@ -183,8 +180,8 @@ extern "C" void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint32_t bu
         }
     }
 }
-extern "C" void tud_mount_cb(void)   { g_console_up = true; }
-extern "C" void tud_umount_cb(void)  { g_console_up = false; }
+extern "C" void gip_dev_mounted(void) { g_console_up = true; }
+extern "C" void tud_umount_cb(void)   { g_console_up = false; }
 
 //--------------------------------------------------------------------+
 // core1: PIO-USB host + drain console->controller ring to the controller
@@ -258,7 +255,7 @@ int main() {
 
         // Inject our own input report to the console the instant new DualSense
         // state arrives (decoupled from the controller carrier — lowest latency).
-        if (tud_vendor_mounted() && ds_live && g_ds_dirty) {
+        if (gip_dev_ready() && ds_live && g_ds_dirty) {
             g_ds_dirty = false;
             send_input_to_console();
         }
@@ -266,12 +263,11 @@ int main() {
         // Relay controller->console, but DROP the controller's own input (0x20) —
         // we generate input from the DualSense. Everything else (announce/identify/
         // auth/status) is forwarded verbatim.
-        if (tud_vendor_mounted()) {
+        if (gip_dev_ready()) {
             uint16_t n;
             while ((n = ring_pop(&g_h2c, pkt, sizeof pkt)) != 0) {
                 if (pkt[0] == 0x20) continue;      // controller input not used
-                tud_vendor_write(pkt, n);
-                tud_vendor_write_flush();
+                gip_dev_send(pkt, n);
             }
         }
 

@@ -30,6 +30,8 @@ static char g_l[4][22];
 
 static tusb_desc_device_t s_dev;
 static uint8_t s_cfg[512];
+static uint8_t s_aux[256];   // BOS / string descriptors
+static void bos_cb(tuh_xfer_t *xfer);
 
 static void hexdump(const char *tag, const uint8_t *p, int n) {
     printf("[probe] %s (%d bytes):\n", tag, n);
@@ -82,9 +84,32 @@ static void cfg_cb(tuh_xfer_t *xfer) {
         uint16_t total = s_cfg[2] | (s_cfg[3] << 8);
         if (total > sizeof(s_cfg)) total = sizeof(s_cfg);
         parse_config(total);
+        tuh_descriptor_get(xfer->daddr, TUSB_DESC_BOS, 0, s_aux, sizeof s_aux, bos_cb, 0);
     } else {
         printf("[probe] config descriptor fetch failed (%d)\n", xfer->result);
     }
+}
+
+static uint8_t g_str_idx = 0;
+static void str_cb(tuh_xfer_t *xfer) {
+    if (xfer->result == XFER_RESULT_SUCCESS) {
+        char tag[16]; snprintf(tag, sizeof tag, "STRING %u", g_str_idx);
+        hexdump(tag, s_aux, xfer->actual_len);
+    }
+    if (++g_str_idx <= 3)
+        tuh_descriptor_get_string(xfer->daddr, g_str_idx, 0x0409, s_aux, sizeof s_aux, str_cb, 0);
+    else
+        printf("[probe] === CAPTURE COMPLETE ===\n");
+}
+
+static void bos_cb(tuh_xfer_t *xfer) {
+    if (xfer->result == XFER_RESULT_SUCCESS && xfer->actual_len >= 2)
+        hexdump("BOS DESC", s_aux, xfer->actual_len);
+    else
+        printf("[probe] no BOS descriptor (result %d)\n", xfer->result);
+    // config already fetched+dumped in cfg_cb; now grab string descriptors
+    g_str_idx = 0;
+    tuh_descriptor_get_string(xfer->daddr, 0, 0x0409, s_aux, sizeof s_aux, str_cb, 0);
 }
 
 static void dev_cb(tuh_xfer_t *xfer) {
