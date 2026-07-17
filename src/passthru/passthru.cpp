@@ -119,13 +119,53 @@ extern "C" void gip_host_rx(const uint8_t *data, uint16_t len) {
 extern "C" void gip_host_mounted(uint8_t daddr) { (void) daddr; g_ctrl_up = true; }
 
 //--------------------------------------------------------------------+
+// Rumble / adaptive-trigger feedback: GIP rumble (0x09) -> DualSense output.
+// Builds a DualSense 0x31 output report (same framing the original firmware
+// uses) and sends it over the BT link. Main motors map to DualSense rumble;
+// the Xbox impulse-trigger levels drive a DualSense trigger-vibration effect.
+//--------------------------------------------------------------------+
+static void ds_send_feedback(uint8_t motorL, uint8_t motorR, uint8_t trigL, uint8_t trigR) {
+    static uint8_t seq = 0;
+    uint8_t out[78];
+    memset(out, 0, sizeof out);
+    out[0] = 0x31;               // DualSense output report id
+    out[1] = (uint8_t) (seq++ << 4);
+    out[2] = 0x10;
+    uint8_t *b = out + 3;        // SetStateData
+    b[0] = 0x01 | 0x04 | 0x08;   // enable: rumble + right/left trigger effects
+    b[2] = motorR;               // right motor (high-freq)
+    b[3] = motorL;               // left motor (low-freq)
+    // Adaptive-trigger "vibration" effect from the impulse-trigger levels.
+    // Offsets per the common DualSense output layout; effect tuning is easy to adjust.
+    if (trigR) { b[11] = 0x26; b[12] = 0x90; b[13] = trigR; }  // right trigger
+    if (trigL) { b[22] = 0x26; b[23] = 0x90; b[24] = trigL; }  // left trigger
+    bt_write(out, sizeof out);
+}
+
+//--------------------------------------------------------------------+
 // Console -> controller  (device side, core0 context)
 //--------------------------------------------------------------------+
 extern "C" void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint32_t bufsize) {
     (void) itf; (void) buffer; (void) bufsize;
     uint8_t pkt[64];
     uint32_t n = tud_vendor_read(pkt, sizeof pkt);
-    if (n) { ring_push(&g_c2h, pkt, (uint16_t) n); g_n_c2h++; }
+    if (!n) return;
+
+    // Relay the packet to the controller.
+    ring_push(&g_c2h, pkt, (uint16_t) n);
+    g_n_c2h++;
+
+    // GIP rumble (0x09): also drive the DualSense. Payload (after 4B header):
+    //   [0] unknown [1] motors [2] left_trigger [3] right_trigger [4] left [5] right
+    if (n >= 10 && pkt[0] == 0x09 && g_ds_valid) {
+        uint8_t tL = pkt[6], tR = pkt[7], mL = pkt[8], mR = pkt[9];
+        static uint8_t last[4]; static uint32_t last_ms;
+        uint32_t nowr = to_ms_since_boot(get_absolute_time());
+        if (mL != last[0] || mR != last[1] || tL != last[2] || tR != last[3] || nowr - last_ms > 200) {
+            last[0] = mL; last[1] = mR; last[2] = tL; last[3] = tR; last_ms = nowr;
+            ds_send_feedback(mL, mR, tL, tR);
+        }
+    }
 }
 extern "C" void tud_mount_cb(void)   { g_console_up = true; }
 extern "C" void tud_umount_cb(void)  { g_console_up = false; }
