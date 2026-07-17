@@ -87,6 +87,7 @@ static uint16_t ring_pop(ring_t *r, uint8_t *out, uint16_t max) {
 
 static volatile uint32_t g_n_c2h = 0, g_n_h2c = 0;
 static volatile bool g_ctrl_up = false, g_console_up = false;
+static volatile bool g_host_ready = false; // core1 sets after PIO-USB host init
 
 // v2: DualSense input substitution. When a DualSense is linked over BT, its
 // state fills g_ds and g_ds_valid=true; the relay then replaces the controller's
@@ -136,9 +137,14 @@ static void core1_main() {
     sleep_ms(10);
     pio_usb_configuration_t pcfg = PIO_USB_DEFAULT_CONFIG;
     pcfg.pin_dp = PIN_USB_DP;
+    // CYW43 (Bluetooth) dynamically claims PIO0; put PIO-USB on PIO1 so their
+    // programs don't collide in PIO0's 32-instruction memory.
+    pcfg.pio_tx_num = 1;
+    pcfg.pio_rx_num = 1;
     tuh_configure(BOARD_TUH_RHPORT, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pcfg);
     gip_host_set_relay(true);            // console drives GIP init; we don't inject power-on
     tuh_init(BOARD_TUH_RHPORT);
+    g_host_ready = true;                 // let core0 bring up CYW43 only after PIO-USB owns its resources
 
     uint8_t pkt[64];
     while (true) {
@@ -168,13 +174,16 @@ int main() {
     SSD1306 oled(I2C_PORT, OLED_ADDR, OLED_H);
     bool oled_ok = oled.init();
 
-    // Bluetooth (DualSense) on core0 — init before core1 so PIO/DMA are claimed first.
-    bool bt_ok = (cyw43_arch_init() == 0);
-    if (bt_ok) { bt_init(); bt_register_data_callback(bt_cb); }
-    printf("[pt] cyw43/bt init: %s\n", bt_ok ? "ok" : "FAILED");
-
+    // Bring up PIO-USB host (core1) FIRST so it claims its PIO/DMA, then start
+    // CYW43/Bluetooth which claims free resources around it.
     multicore_reset_core1();
     multicore_launch_core1(core1_main);
+    uint32_t t_wait = to_ms_since_boot(get_absolute_time());
+    while (!g_host_ready && (to_ms_since_boot(get_absolute_time()) - t_wait) < 3000) tight_loop_contents();
+
+    bool bt_ok = (cyw43_arch_init() == 0);
+    if (bt_ok) { bt_init(); bt_register_data_callback(bt_cb); }
+    printf("[pt] host_ready=%d  cyw43/bt init: %s\n", g_host_ready, bt_ok ? "ok" : "FAILED");
 
     uint8_t pkt[64];
     uint32_t last_hb = 0;
