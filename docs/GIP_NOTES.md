@@ -152,6 +152,54 @@ FTDI (CP2102N) on GP0/GP1 @115200 for live logs; firmware watches UART for byte 
 `reset_usb_boot()` = button-free BOOTSEL. Flash loop: `picotool` over native USB while
 reading COM12. This made protocol iteration ~1 min instead of ~5.
 
+## CAPTURED raw descriptors — real Xbox Series controller 045E:0B12 (donor)
+Captured via `gip_probe` over serial. These are the EXACT bytes to clone on the device side.
+
+**Device descriptor (18 bytes):**
+```
+12 01 00 02 FF 47 D0 40 5E 04 12 0B 09 05 01 02 03 01
+```
+bcdUSB 0x0200 · class/sub/proto FF/47/D0 · bMaxPacketSize0 0x40 · VID 0x045E · PID 0x0B12 ·
+**bcdDevice 0x0509** · iMfr 1 · iProd 2 · iSerial 3 · 1 config.
+
+**Config descriptor (119 bytes, wTotalLength 0x77, 3 interfaces, 500mA):**
+```
+09 02 77 00 03 01 00 A0 FA
+09 04 00 00 02 FF 47 D0 00  07 05 02 03 40 00 04  07 05 82 03 40 00 04   IF0 alt0: GIP data, int EP 0x02/0x82
+09 04 00 01 02 FF 47 D0 00  07 05 02 03 40 00 04  07 05 82 03 40 00 02   IF0 alt1
+09 04 01 00 00 FF 47 D0 00                                               IF1 alt0: 0 EP
+09 04 01 01 02 FF 47 D0 00  07 05 03 01 E4 00 01  07 05 83 01 40 00 01   IF1 alt1: audio iso 0x03/0x83
+09 04 02 00 00 FF 47 D0 00                                               IF2 alt0: 0 EP
+09 04 02 01 02 FF 47 D0 00  07 05 04 02 40 00 00  07 05 84 02 40 00 00   IF2 alt1: bulk 0x04/0x84
+```
+
+**Strings:** 0 = langid 0x0409 · 1 = "Microsoft" · 2 = "Controller" ·
+3 = serial "3039373130393232343133303330" (28 ASCII digits).
+**BOS descriptor: NONE** (controller STALLs the BOS request → no MS OS 2.0).
+**String 0xEE (MS OS 1.0): NOT YET CAPTURED** — this is the current lead (see STATUS.md).
+
+## DualSense BT input report (what `bt_cb` receives)
+BT interrupt channel, report id `0x31`; the standard input body starts at **data+3** (63 bytes),
+matching the USB report-0x01 layout:
+```
+[0] LX  [1] LY  [2] RX  [3] RY  [4] L2  [5] R2  [6] seq
+[7] buttons0: lo-nibble = dpad hat (0..7, 8=neutral); b4 square b5 cross b6 circle b7 triangle
+[8] buttons1: b0 L1 b1 R1 b2 L2 b3 R2 b4 create b5 options b6 L3 b7 R3
+[9] buttons2: b0 PS b1 touchpad ...
+[~52] battery (low nibble * 10 ≈ %%)
+```
+
+## DualSense → Xbox GIP input mapping (`src/passthru/ds_to_gip.h`)
+cross→A, circle→B, square→X, triangle→Y, L1→LB, R1→RB, L3→LS, R3→RS, options→menu,
+create→view, dpad hat→dpad bits. L2/R2 (0..255)→GIP triggers (0..1023). Sticks 0..255→s16
+(Y axes inverted). GIP input report = `20 00 <seq> 0E` + 14-byte payload
+(buttons u16, trigL u16, trigR u16, LX/LY/RX/RY s16).
+
+## GIP rumble → DualSense (`passthru.cpp ds_send_feedback`)
+GIP rumble 0x09 payload: `[0]?[1]motors[2]Ltrig[3]Rtrig[4]Lmain[5]Rmain`. Mapped to a DualSense
+0x31 output report (bt_write): main motors → rumble bytes; impulse triggers → adaptive-trigger
+vibration effect (offsets ~b[11]/b[22], mode 0x26 — needs tuning with a game).
+
 ## Status vs plan
 Phase 0 (PIO-USB host enumerates a device) — **DONE** on hardware.
 Phase 1 (read the controller over GIP) — **DONE**: input + status streaming via class driver.
