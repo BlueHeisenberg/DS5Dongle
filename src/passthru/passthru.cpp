@@ -22,9 +22,16 @@
 #include "hardware/i2c.h"
 #include "pio_usb.h"
 #include "tusb.h"
+#include "pico/cyw43_arch.h"
 #include "ssd1306.h"
 #include "gip_host.h"
 #include "ds_to_gip.h"
+#include "bt.h"
+
+// bt.cpp references these (declared in usb.h). We don't use the audio device,
+// so provide the symbols directly instead of linking usb.cpp.
+uint8_t mute[2]   = {0, 0};
+float   volume[2] = {1.0f, 1.0f};
 
 #define I2C_PORT   i2c1
 #define PIN_SDA    10
@@ -87,6 +94,19 @@ static volatile bool g_ctrl_up = false, g_console_up = false;
 // controller's auth/announce/identify verbatim. Off until BT is wired in.
 static uint8_t g_ds[63];
 static volatile bool g_ds_valid = false;
+static volatile uint32_t g_ds_last_ms = 0;
+static volatile uint32_t g_ds_reports = 0;
+
+// DualSense report arrives over BT (same framing the original firmware uses:
+// interrupt channel, report id 0x31, body at data+3).
+static void bt_cb(CHANNEL_TYPE channel, uint8_t *data, uint16_t len) {
+    if (channel == INTERRUPT && len >= 66 && data[1] == 0x31) {
+        memcpy(g_ds, data + 3, 63);
+        g_ds_valid = true;
+        g_ds_last_ms = to_ms_since_boot(get_absolute_time());
+        g_ds_reports++;
+    }
+}
 
 //--------------------------------------------------------------------+
 // Controller -> console  (host side, core1 context)
@@ -148,6 +168,11 @@ int main() {
     SSD1306 oled(I2C_PORT, OLED_ADDR, OLED_H);
     bool oled_ok = oled.init();
 
+    // Bluetooth (DualSense) on core0 — init before core1 so PIO/DMA are claimed first.
+    bool bt_ok = (cyw43_arch_init() == 0);
+    if (bt_ok) { bt_init(); bt_register_data_callback(bt_cb); }
+    printf("[pt] cyw43/bt init: %s\n", bt_ok ? "ok" : "FAILED");
+
     multicore_reset_core1();
     multicore_launch_core1(core1_main);
 
@@ -159,13 +184,17 @@ int main() {
         if (c == 'b' || c == 'B') { printf("[pt] BOOTSEL\n"); sleep_ms(20); reset_usb_boot(0, 0); }
 
         tud_task();
+        cyw43_arch_poll();               // service Bluetooth (DualSense)
+
+        uint32_t now0 = to_ms_since_boot(get_absolute_time());
+        bool ds_live = g_ds_valid && (now0 - g_ds_last_ms) < 500;
 
         // Drain controller->console ring to the console.
         if (tud_vendor_mounted()) {
             uint16_t n = ring_pop(&g_h2c, pkt, sizeof pkt);
             if (n) {
-                // v2: substitute DualSense input for the controller's INPUT report.
-                if (g_ds_valid && pkt[0] == 0x20 && n >= 4 + 14) {
+                // v2: substitute live DualSense input for the controller's INPUT report.
+                if (ds_live && pkt[0] == 0x20 && n >= 4 + 14) {
                     dualsense_to_gip_input(g_ds, pkt + 4);
                 }
                 tud_vendor_write(pkt, n);
@@ -176,16 +205,24 @@ int main() {
         uint32_t now = now_ms();
         if (now - last_hb > 1000) {
             last_hb = now;
-            printf("[pt] hb console=%d ctrl=%d c2h=%lu h2c=%lu\n",
-                   g_console_up, g_ctrl_up, (unsigned long) g_n_c2h, (unsigned long) g_n_h2c);
+            printf("[pt] hb console=%d ctrl=%d ds=%d c2h=%lu h2c=%lu dsrpt=%lu\n",
+                   g_console_up, g_ctrl_up, ds_live, (unsigned long) g_n_c2h,
+                   (unsigned long) g_n_h2c, (unsigned long) g_ds_reports);
         }
         if (oled_ok) {
+            // Line 0: link status of all three ends (Xbox host, USB controller, DualSense BT)
+            snprintf(l0, sizeof l0, "XB%s CT%s DS%s", g_console_up ? "+" : "-",
+                     g_ctrl_up ? "+" : "-", ds_live ? "+" : "-");
+            // DualSense detail: battery %% (report byte ~52) + report count
+            int batt = ds_live ? ((g_ds[52] & 0x0F) * 10) : 0;
+            if (batt > 100) batt = 100;
+            snprintf(l1, sizeof l1, "DS bat%d%% r%lu", batt, (unsigned long) g_ds_reports);
+            // Live DualSense sticks/trigger to prove input is flowing
+            snprintf(l2, sizeof l2, "LX%3u LY%3u L2%3u",
+                     ds_live ? g_ds[0] : 0, ds_live ? g_ds[1] : 0, ds_live ? g_ds[4] : 0);
             oled.clear(false);
-            snprintf(l0, sizeof l0, "PASSTHRU RELAY");
-            snprintf(l1, sizeof l1, "XBOX%s CTRL%s", g_console_up ? "+" : "-", g_ctrl_up ? "+" : "-");
-            snprintf(l2, sizeof l2, "->%lu <-%lu", (unsigned long) g_n_c2h, (unsigned long) g_n_h2c);
-            oled.draw_text(2, 2, l0, 1);
-            oled.draw_text(2, 13, l1, 1);
+            oled.draw_text(2, 1, l0, 1);
+            oled.draw_text(2, 12, l1, 1);
             oled.draw_text(2, 23, l2, 1);
             oled.show();
         }

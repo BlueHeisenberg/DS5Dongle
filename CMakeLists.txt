@@ -247,19 +247,27 @@ add_executable(passthrough
         src/xbox/xbox_descriptors.c
         src/gipdrv/gip_host.c
         src/bringup/ssd1306.cpp
+        src/bt.cpp
         ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
 )
-target_include_directories(passthrough PRIVATE src/passthru src/gipdrv src/bringup ${PICO_TINYUSB_PATH}/src)
+target_include_directories(passthrough PRIVATE src/passthru src/gipdrv src/bringup src ${PICO_TINYUSB_PATH}/src ${PICO_TINYUSB_PATH}/hw)
 pico_set_program_name(passthrough "passthrough")
 pico_enable_stdio_uart(passthrough 1)
 pico_enable_stdio_usb(passthrough 0)
-target_compile_definitions(passthrough PRIVATE CFG_TUH_RPI_PIO_USB=1)
+target_compile_definitions(passthrough PRIVATE
+        CFG_TUH_RPI_PIO_USB=1
+        CYW43_LWIP=0
+        PICO_FLASH_ASSUME_CORE1_SAFE=1
+)
 target_link_libraries(passthrough
         pico_stdlib
         pico_multicore
         tinyusb_device
         tinyusb_host
         pico_pio_usb
+        pico_cyw43_arch_poll
+        pico_btstack_classic
+        pico_btstack_cyw43
         hardware_i2c
         hardware_dma
 )

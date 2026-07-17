@@ -140,6 +140,20 @@ the whole approach is blocked — treat Phase 0 as a go/no-go gate.
    third concurrent stack (CYW43/BT) — verify coexistence at 120 MHz.
 3. Robustness: re-auth, disconnect/reconnect, guide button, status UI.
 
+### Planned features (not dropped — deferred)
+- **Audio relay (headset).** The Xbox controller exposes an audio interface (IF1, iso
+  endpoints 0x83 IN / 0x03 OUT) — chat audio runs through the controller. To support a
+  headset we must relay that audio path between console and the donor controller (iso
+  endpoints on both device+host sides), and bridge the DualSense's own audio (BT headset /
+  the DualSense 3.5mm/speaker). Non-trivial (iso endpoints + resampling) — a dedicated phase,
+  but part of the goal, NOT permanently disabled.
+- **Adaptive triggers <- impulse triggers.** The Xbox controller has impulse (trigger)
+  rumble carried in the GIP rumble command (0x09) with left/right trigger motor levels. Map
+  those onto the DualSense **adaptive trigger** effects (resistance/vibration) so the console's
+  trigger-haptic intent is felt on the DualSense. Also map the main dual-motor rumble to the
+  DualSense actuators. Requires sending DualSense output reports over the existing BT link
+  (bt_write) — the plumbing already exists in bt.cpp.
+
 ### Build targets
 `bringup_test` (LED+OLED), `usbhost_test`, `gip_probe`, `gip_capture`, `class_test`,
 `gip_hostdrv` (read controller), `xbox_dev` (device spoof), **`passthrough`** (the product).
