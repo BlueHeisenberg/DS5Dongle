@@ -66,7 +66,11 @@ static uint16_t gip_open(uint8_t rhport, uint8_t daddr,
             if (ep->bmAttributes.xfer == TUSB_XFER_INTERRUPT) {
                 has_interrupt = true;
                 if (!gip.active) {
-                    tuh_edpt_open(daddr, ep);
+                    // Poll at 1ms instead of the controller's declared bInterval (4ms)
+                    // to minimise input-carrier latency.
+                    tusb_desc_endpoint_t ep_fast = *ep;
+                    ep_fast.bInterval = 1;
+                    tuh_edpt_open(daddr, &ep_fast);
                     if (tu_edpt_dir(ep->bEndpointAddress) == TUSB_DIR_IN) {
                         in = ep->bEndpointAddress; insz = tu_edpt_packet_size(ep);
                     } else {

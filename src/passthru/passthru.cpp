@@ -95,8 +95,10 @@ static volatile bool g_host_ready = false; // core1 sets after PIO-USB host init
 // controller's auth/announce/identify verbatim. Off until BT is wired in.
 static uint8_t g_ds[63];
 static volatile bool g_ds_valid = false;
+static volatile bool g_ds_dirty = false;   // new DualSense state to push to console
 static volatile uint32_t g_ds_last_ms = 0;
 static volatile uint32_t g_ds_reports = 0;
+static uint8_t g_in_seq = 0;                // sequence for our injected input reports
 
 // DualSense report arrives over BT (same framing the original firmware uses:
 // interrupt channel, report id 0x31, body at data+3).
@@ -104,17 +106,31 @@ static void bt_cb(CHANNEL_TYPE channel, uint8_t *data, uint16_t len) {
     if (channel == INTERRUPT && len >= 66 && data[1] == 0x31) {
         memcpy(g_ds, data + 3, 63);
         g_ds_valid = true;
+        g_ds_dirty = true;
         g_ds_last_ms = to_ms_since_boot(get_absolute_time());
         g_ds_reports++;
     }
 }
 
+// Generate a GIP INPUT report (0x20) directly from the DualSense state and send
+// it to the console. Decoupled from the controller's carrier so input flows at
+// the DualSense's rate regardless of whether the donor controller streams.
+static void send_input_to_console() {
+    uint8_t pkt[4 + 14];
+    pkt[0] = 0x20; pkt[1] = 0x00; pkt[2] = g_in_seq++; pkt[3] = 14;
+    dualsense_to_gip_input(g_ds, pkt + 4);
+    tud_vendor_write(pkt, sizeof pkt);
+    tud_vendor_write_flush();
+}
+
 //--------------------------------------------------------------------+
 // Controller -> console  (host side, core1 context)
 //--------------------------------------------------------------------+
+static volatile uint32_t g_ctrl_in = 0; // controller INPUT (0x20) count, for rate calc
 extern "C" void gip_host_rx(const uint8_t *data, uint16_t len) {
     ring_push(&g_h2c, data, len);
     g_n_h2c++;
+    if (len > 0 && data[0] == 0x20) g_ctrl_in++;
 }
 extern "C" void gip_host_mounted(uint8_t daddr) { (void) daddr; g_ctrl_up = true; }
 
@@ -182,7 +198,9 @@ static void core1_main() {
     pcfg.pio_tx_num = 1;
     pcfg.pio_rx_num = 1;
     tuh_configure(BOARD_TUH_RHPORT, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pcfg);
-    gip_host_set_relay(true);            // console drives GIP init; we don't inject power-on
+    // Host drives the controller on (power-on) so it always streams its input
+    // carrier — otherwise on a lenient host (PC) it stays idle and no input flows.
+    gip_host_set_relay(false);
     tuh_init(BOARD_TUH_RHPORT);
     g_host_ready = true;                 // let core0 bring up CYW43 only after PIO-USB owns its resources
 
@@ -238,14 +256,20 @@ int main() {
         uint32_t now0 = to_ms_since_boot(get_absolute_time());
         bool ds_live = g_ds_valid && (now0 - g_ds_last_ms) < 500;
 
-        // Drain ALL controller->console packets each iteration (low latency).
+        // Inject our own input report to the console the instant new DualSense
+        // state arrives (decoupled from the controller carrier — lowest latency).
+        if (tud_vendor_mounted() && ds_live && g_ds_dirty) {
+            g_ds_dirty = false;
+            send_input_to_console();
+        }
+
+        // Relay controller->console, but DROP the controller's own input (0x20) —
+        // we generate input from the DualSense. Everything else (announce/identify/
+        // auth/status) is forwarded verbatim.
         if (tud_vendor_mounted()) {
             uint16_t n;
             while ((n = ring_pop(&g_h2c, pkt, sizeof pkt)) != 0) {
-                // v2: substitute live DualSense input for the controller's INPUT report.
-                if (ds_live && pkt[0] == 0x20 && n >= 4 + 14) {
-                    dualsense_to_gip_input(g_ds, pkt + 4);
-                }
+                if (pkt[0] == 0x20) continue;      // controller input not used
                 tud_vendor_write(pkt, n);
                 tud_vendor_write_flush();
             }
@@ -253,10 +277,17 @@ int main() {
 
         uint32_t now = now_ms();
         if (now - last_hb > 1000) {
-            last_hb = now;
-            printf("[pt] hb console=%d ctrl=%d ds=%d c2h=%lu h2c=%lu dsrpt=%lu\n",
-                   g_console_up, g_ctrl_up, ds_live, (unsigned long) g_n_c2h,
-                   (unsigned long) g_n_h2c, (unsigned long) g_ds_reports);
+            uint32_t dt = now - last_hb; last_hb = now;
+            static uint32_t p_ds = 0, p_ctrl = 0;
+            uint32_t ds_hz   = (g_ds_reports - p_ds) * 1000 / (dt ? dt : 1);
+            uint32_t ctrl_hz = (g_ctrl_in    - p_ctrl) * 1000 / (dt ? dt : 1);
+            p_ds = g_ds_reports; p_ctrl = g_ctrl_in;
+            // Rates tell us the latency budget: DS report interval + controller
+            // (input carrier) poll interval + 1ms device poll.
+            printf("[pt] console=%d ctrl=%d ds=%d | DS %luHz (%lums)  CTRL %luHz (%lums)  loop-fast\n",
+                   g_console_up, g_ctrl_up, ds_live,
+                   (unsigned long) ds_hz,   (unsigned long) (ds_hz ? 1000 / ds_hz : 0),
+                   (unsigned long) ctrl_hz, (unsigned long) (ctrl_hz ? 1000 / ctrl_hz : 0));
         }
         // Status panel — connection info only, 1 Hz (cheap; the ~12 ms blocking
         // I2C write stays well out of the relay hot path).
