@@ -17,6 +17,10 @@ typedef void (*bt_data_callback_t)(CHANNEL_TYPE channel, uint8_t *data, uint16_t
 
 int bt_init();
 void bt_register_data_callback(bt_data_callback_t callback);
+
+// Status helpers (for a UI). connected = HID interrupt channel open.
+bool bt_is_connected();
+void bt_get_addr(uint8_t out[6]);
 void bt_send_packet(uint8_t *data, uint16_t len);
 void bt_send_control(uint8_t *data, uint16_t len);
 void bt_write(uint8_t* data,uint16_t len);

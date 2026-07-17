@@ -47,11 +47,11 @@ static const uint8_t desc_configuration[] = {
     // Interface 0: vendor 0xFF / 0x47 / 0xD0, 2 endpoints
     9, TUSB_DESC_INTERFACE, 0, 0, 2, 0xFF, 0x47, 0xD0, 0,
 
-    // Endpoint IN 0x81, interrupt, 64B, interval 4
-    7, TUSB_DESC_ENDPOINT, EP_GIP_IN, TUSB_XFER_INTERRUPT, U16_TO_U8S_LE(EP_SIZE), 4,
+    // Endpoint IN 0x82, interrupt, 64B, interval 1 (1ms poll -> lower latency)
+    7, TUSB_DESC_ENDPOINT, EP_GIP_IN, TUSB_XFER_INTERRUPT, U16_TO_U8S_LE(EP_SIZE), 1,
 
-    // Endpoint OUT 0x01, interrupt, 64B, interval 4
-    7, TUSB_DESC_ENDPOINT, EP_GIP_OUT, TUSB_XFER_INTERRUPT, U16_TO_U8S_LE(EP_SIZE), 4,
+    // Endpoint OUT 0x02, interrupt, 64B, interval 1
+    7, TUSB_DESC_ENDPOINT, EP_GIP_OUT, TUSB_XFER_INTERRUPT, U16_TO_U8S_LE(EP_SIZE), 1,
 };
 
 const uint8_t *tud_descriptor_configuration_cb(uint8_t index) {

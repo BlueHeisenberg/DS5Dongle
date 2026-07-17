@@ -226,8 +226,8 @@ int main() {
     printf("[pt] host_ready=%d  cyw43/bt init: %s\n", g_host_ready, bt_ok ? "ok" : "FAILED");
 
     uint8_t pkt[64];
-    uint32_t last_hb = 0;
-    char l0[22], l1[22], l2[22];
+    uint32_t last_hb = 0, last_oled = 0;
+    char l0[22], l1[22], l2[22], l3[22];
     while (true) {
         int c = getchar_timeout_us(0);
         if (c == 'b' || c == 'B') { printf("[pt] BOOTSEL\n"); sleep_ms(20); reset_usb_boot(0, 0); }
@@ -238,10 +238,10 @@ int main() {
         uint32_t now0 = to_ms_since_boot(get_absolute_time());
         bool ds_live = g_ds_valid && (now0 - g_ds_last_ms) < 500;
 
-        // Drain controller->console ring to the console.
+        // Drain ALL controller->console packets each iteration (low latency).
         if (tud_vendor_mounted()) {
-            uint16_t n = ring_pop(&g_h2c, pkt, sizeof pkt);
-            if (n) {
+            uint16_t n;
+            while ((n = ring_pop(&g_h2c, pkt, sizeof pkt)) != 0) {
                 // v2: substitute live DualSense input for the controller's INPUT report.
                 if (ds_live && pkt[0] == 0x20 && n >= 4 + 14) {
                     dualsense_to_gip_input(g_ds, pkt + 4);
@@ -258,21 +258,30 @@ int main() {
                    g_console_up, g_ctrl_up, ds_live, (unsigned long) g_n_c2h,
                    (unsigned long) g_n_h2c, (unsigned long) g_ds_reports);
         }
-        if (oled_ok) {
-            // Line 0: link status of all three ends (Xbox host, USB controller, DualSense BT)
-            snprintf(l0, sizeof l0, "XB%s CT%s DS%s", g_console_up ? "+" : "-",
-                     g_ctrl_up ? "+" : "-", ds_live ? "+" : "-");
-            // DualSense detail: battery %% (report byte ~52) + report count
+        // Status panel — connection info only, 1 Hz (cheap; the ~12 ms blocking
+        // I2C write stays well out of the relay hot path).
+        if (oled_ok && now - last_oled > 1000) {
+            last_oled = now;
+            // Host (Xbox/PC) + donor Xbox controller (USB) presence.
+            snprintf(l0, sizeof l0, "HOST%s  PAD%s",
+                     g_console_up ? ":ok" : ":--", g_ctrl_up ? ":ok" : ":--");
+            // DualSense state: LINK (streaming) / CONN (paired) / SRCH (looking) + battery.
+            const char *dss = ds_live ? "LINK" : (bt_is_connected() ? "CONN" : "SRCH");
             int batt = ds_live ? ((g_ds[52] & 0x0F) * 10) : 0;
             if (batt > 100) batt = 100;
-            snprintf(l1, sizeof l1, "DS bat%d%% r%lu", batt, (unsigned long) g_ds_reports);
-            // Live DualSense sticks/trigger to prove input is flowing
-            snprintf(l2, sizeof l2, "LX%3u LY%3u L2%3u",
-                     ds_live ? g_ds[0] : 0, ds_live ? g_ds[1] : 0, ds_live ? g_ds[4] : 0);
+            snprintf(l1, sizeof l1, "DS:%s  BAT %d%%", dss, batt);
+            // DualSense MAC (valid once found/paired).
+            uint8_t a[6]; bt_get_addr(a);
+            if (bt_is_connected() || ds_live)
+                snprintf(l2, sizeof l2, "%02X:%02X:%02X:%02X:%02X:%02X", a[0], a[1], a[2], a[3], a[4], a[5]);
+            else
+                snprintf(l2, sizeof l2, "MAC --:--:--:--");
+            snprintf(l3, sizeof l3, "DualSense -> Xbox");
             oled.clear(false);
-            oled.draw_text(2, 1, l0, 1);
-            oled.draw_text(2, 12, l1, 1);
-            oled.draw_text(2, 23, l2, 1);
+            oled.draw_text(2, 0, l0, 1);
+            oled.draw_text(2, 8, l1, 1);
+            oled.draw_text(2, 16, l2, 1);
+            oled.draw_text(2, 24, l3, 1);
             oled.show();
         }
     }
