@@ -176,6 +176,71 @@ target_link_libraries(gip_probe
 )
 pico_add_extra_outputs(gip_probe)
 
+# ---- GIP capture: drive the controller as GIP host, record its packets to flash ----
+add_executable(gip_capture
+        src/gipprobe/gip_capture.cpp
+        src/bringup/ssd1306.cpp
+        ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
+)
+target_include_directories(gip_capture PRIVATE src/gipprobe src/usbhost src/bringup)
+pico_set_program_name(gip_capture "gip_capture")
+pico_enable_stdio_uart(gip_capture 1)
+pico_enable_stdio_usb(gip_capture 0)
+target_compile_definitions(gip_capture PRIVATE CFG_TUH_RPI_PIO_USB=1)
+target_link_libraries(gip_capture
+        pico_stdlib
+        pico_multicore
+        tinyusb_host
+        pico_pio_usb
+        hardware_i2c
+        hardware_dma
+        hardware_flash
+)
+pico_add_extra_outputs(gip_capture)
+
+# ---- Class-driver test (MSC pendrive + HID) to validate PIO-USB IN transfers ----
+add_executable(class_test
+        src/classtest/class_test.cpp
+        src/bringup/ssd1306.cpp
+        ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
+)
+target_include_directories(class_test PRIVATE src/classtest src/bringup)
+pico_set_program_name(class_test "class_test")
+pico_enable_stdio_uart(class_test 1)
+pico_enable_stdio_usb(class_test 0)
+target_compile_definitions(class_test PRIVATE CFG_TUH_RPI_PIO_USB=1)
+target_link_libraries(class_test
+        pico_stdlib
+        pico_multicore
+        tinyusb_host
+        pico_pio_usb
+        hardware_i2c
+        hardware_dma
+)
+pico_add_extra_outputs(class_test)
+
+# ---- GIP host class driver (finally read the controller properly) ----
+add_executable(gip_hostdrv
+        src/gipdrv/gip_main.cpp
+        src/gipdrv/gip_host.c
+        src/bringup/ssd1306.cpp
+        ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
+)
+target_include_directories(gip_hostdrv PRIVATE src/gipdrv src/bringup ${PICO_TINYUSB_PATH}/src)
+pico_set_program_name(gip_hostdrv "gip_hostdrv")
+pico_enable_stdio_uart(gip_hostdrv 1)
+pico_enable_stdio_usb(gip_hostdrv 0)
+target_compile_definitions(gip_hostdrv PRIVATE CFG_TUH_RPI_PIO_USB=1)
+target_link_libraries(gip_hostdrv
+        pico_stdlib
+        pico_multicore
+        tinyusb_host
+        pico_pio_usb
+        hardware_i2c
+        hardware_dma
+)
+pico_add_extra_outputs(gip_hostdrv)
+
 # ---- Xbox controller DEVICE spoof (enumerate as Xbox pad + capture host GIP) ----
 add_executable(xbox_dev
         src/xbox/xbox_dev.cpp

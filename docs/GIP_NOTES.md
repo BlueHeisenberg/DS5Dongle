@@ -126,8 +126,36 @@ Windows (and the console) validate it. Best captured byte-exact from the real pa
 `gip_probe` rather than hand-rolled. After IDENTIFY, the console/host issues AUTH (0x06),
 which needs the genuine chip regardless.
 
+## BREAKTHROUGH: reading the controller needs a host CLASS DRIVER, not raw endpoints
+Raw `tuh_edpt_open`/`tuh_edpt_xfer` on the controller's interrupt IN NEVER completed
+(`cb=0` forever) — because TinyUSB only activates an interface's endpoints when a class
+driver *claims* it. Proof: an MSC pendrive read fine (class driver), our raw approach did not.
+Fix: a minimal GIP host class driver registered via `usbh_app_driver_get_cb()` that matches
+class FF/47/D0, opens the interrupt endpoints, polls IN, and sends GIP power-on. See
+`src/gipdrv/gip_host.c`. Result: controller streams INPUT (0x20) @~125Hz + STATUS (0x03). ✅
+
+### Captured input report (cmd 0x20, 44-byte payload) — Series ctrl 045E:0B12
+```
+0-1   buttons (bitfield)
+2-3   trigger_left  (u16, 0..1023)
+4-5   trigger_right (u16, 0..1023)
+6-7   stick_left_x  (s16)
+8-9   stick_left_y  (s16)
+10-11 stick_right_x (s16)
+12-13 stick_right_y (s16)
+(remaining bytes 0 / padding)
+```
+STATUS 0x03 payload seen: e.g. `E0 04 8B 01 00 00` (battery/health).
+
+### Debug workflow that unblocked this
+FTDI (CP2102N) on GP0/GP1 @115200 for live logs; firmware watches UART for byte 'b' →
+`reset_usb_boot()` = button-free BOOTSEL. Flash loop: `picotool` over native USB while
+reading COM12. This made protocol iteration ~1 min instead of ~5.
+
 ## Status vs plan
 Phase 0 (PIO-USB host enumerates a device) — **DONE** on hardware.
+Phase 1 (read the controller over GIP) — **DONE**: input + status streaming via class driver.
+Next: capture announce+identify on a fresh connect (clone descriptor), then device side + auth relay.
 Device side (milestone 3 experiment): answered IDENTIFY with a minimal descriptor.
 Result: Windows **stopped retrying** identify (framing accepted!) then sent
 **POWER 0x04 = GIP_PWR_OFF** — it dismisses the device because the identify content is
