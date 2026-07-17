@@ -24,6 +24,7 @@
 #include "tusb.h"
 #include "ssd1306.h"
 #include "gip_host.h"
+#include "ds_to_gip.h"
 
 #define I2C_PORT   i2c1
 #define PIN_SDA    10
@@ -79,6 +80,13 @@ static uint16_t ring_pop(ring_t *r, uint8_t *out, uint16_t max) {
 
 static volatile uint32_t g_n_c2h = 0, g_n_h2c = 0;
 static volatile bool g_ctrl_up = false, g_console_up = false;
+
+// v2: DualSense input substitution. When a DualSense is linked over BT, its
+// state fills g_ds and g_ds_valid=true; the relay then replaces the controller's
+// INPUT (0x20) payload with DualSense-derived input, while still relaying the
+// controller's auth/announce/identify verbatim. Off until BT is wired in.
+static uint8_t g_ds[63];
+static volatile bool g_ds_valid = false;
 
 //--------------------------------------------------------------------+
 // Controller -> console  (host side, core1 context)
@@ -155,7 +163,14 @@ int main() {
         // Drain controller->console ring to the console.
         if (tud_vendor_mounted()) {
             uint16_t n = ring_pop(&g_h2c, pkt, sizeof pkt);
-            if (n) { tud_vendor_write(pkt, n); tud_vendor_write_flush(); }
+            if (n) {
+                // v2: substitute DualSense input for the controller's INPUT report.
+                if (g_ds_valid && pkt[0] == 0x20 && n >= 4 + 14) {
+                    dualsense_to_gip_input(g_ds, pkt + 4);
+                }
+                tud_vendor_write(pkt, n);
+                tud_vendor_write_flush();
+            }
         }
 
         uint32_t now = now_ms();

@@ -120,6 +120,27 @@ the whole approach is blocked — treat Phase 0 as a go/no-go gate.
 - TinyUSB dual-role (device + PIO-USB host) examples.
 - Existing DualSense report structure docs (already cited in README).
 
-## Honest status
-Research-grade. Phase 0 and Phase 2 are the real risks. No firmware written yet — this doc
-is the plan we build against.
+## Status (updated)
+- **Phase 0** ✅ PIO-USB host enumerates devices.
+- **Phase 1** ✅ Read the genuine controller over GIP via a custom host class driver
+  (`src/gipdrv/gip_host.c`) — input (0x20) + status (0x03) stream. Raw `tuh_edpt` does NOT
+  work (endpoints aren't polled unless a class driver claims the interface).
+- **Concurrency** ✅ device (native USB) + host (PIO-USB) run together, stable.
+- **Transparent relay** ✅ `src/passthru` — console↔Pico↔controller, every GIP packet relayed
+  (incl. auth 0x06). **Verified on Windows: the relayed controller navigates Steam Big
+  Picture** — full pipeline (enumerate + GIP handshake relay + input) works on a real host.
+- **v2 input substitution**: `src/passthru/ds_to_gip.h` maps a DualSense report → GIP input;
+  wired into the relay behind `g_ds_valid` (off until BT is integrated).
+
+### Remaining
+1. **Real Xbox test** of the relay — the console enforces XSM3 strictly; the relay forwards
+   the genuine controller's auth, so it should pass, but only the console confirms it.
+2. **DualSense BT integration** (activate v2): bring up the BT link (reuse `bt.cpp` +
+   `btstack_config.h`), parse the DualSense report into `g_ds`, set `g_ds_valid`. Adds a
+   third concurrent stack (CYW43/BT) — verify coexistence at 120 MHz.
+3. Robustness: re-auth, disconnect/reconnect, guide button, status UI.
+
+### Build targets
+`bringup_test` (LED+OLED), `usbhost_test`, `gip_probe`, `gip_capture`, `class_test`,
+`gip_hostdrv` (read controller), `xbox_dev` (device spoof), **`passthrough`** (the product).
+Debug: FTDI on GP0/GP1 @115200; serial byte 'b' → BOOTSEL for button-free reflash.
