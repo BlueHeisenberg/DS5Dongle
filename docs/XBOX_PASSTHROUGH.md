@@ -132,6 +132,23 @@ the whole approach is blocked — treat Phase 0 as a go/no-go gate.
 - **v2 input substitution**: `src/passthru/ds_to_gip.h` maps a DualSense report → GIP input;
   wired into the relay behind `g_ds_valid` (off until BT is integrated).
 
+### Xbox device-acceptance wall (measured on hardware)
+On a real Xbox the device gets `HOST --` (never configured). Diagnosed via a
+`descReq dev/cfg` counter: the Xbox **reads** our device+config descriptors
+(`dev=2 cfg=1`) then **rejects** them — so it's descriptor content, not
+cable/port/power (two cables, both ports, controller unplugged all reproduce it).
+- Windows accepts our minimal single GIP interface (`console=1`); the **Xbox is
+  stricter** and wants the real controller's full 3-interface topology
+  (GIP data + audio-iso + bulk).
+- Cloning the raw 3-interface config **breaks TinyUSB's device config** entirely
+  (even the PC then fails): the stock vendor class can't present iso/bulk endpoints
+  or alt settings, and it requires every declared interface to be claimed.
+- **Conclusion:** presenting the real topology needs a **custom device-side USB
+  class driver** (device-side analogue of `gip_host.c`) that claims all GIP
+  interfaces and manages IF0's endpoints while declaring IF1/IF2 (+ possibly the
+  iso/bulk endpoints and a BOS/MS-OS descriptor). This is the known-hard part of
+  Xbox spoofing. Current firmware keeps the single-interface descriptor (works on PC).
+
 ### Remaining
 1. **Real Xbox test** of the relay — the console enforces XSM3 strictly; the relay forwards
    the genuine controller's auth, so it should pass, but only the console confirms it.

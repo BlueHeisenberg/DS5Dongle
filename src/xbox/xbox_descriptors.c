@@ -30,32 +30,40 @@ static const tusb_desc_device_t desc_device = {
     .bNumConfigurations = 0x01,
 };
 
+// Diagnostics: how many times the host asks for our descriptors. If these climb
+// but the device never configures, the host is reading and REJECTING us (descriptor
+// content). If they stay 0, the host isn't talking to us at all (physical/cable).
+volatile uint32_t g_dev_desc_reqs = 0;
+volatile uint32_t g_cfg_desc_reqs = 0;
+
 const uint8_t *tud_descriptor_device_cb(void) {
+    g_dev_desc_reqs++;
     return (const uint8_t *) &desc_device;
 }
 
 //--------------------------------------------------------------------+
 // Configuration descriptor: one vendor interface, 2 interrupt endpoints
 //--------------------------------------------------------------------+
-#define CONFIG_TOTAL_LEN  (9 + 9 + 7 + 7)
-
+// EXACT clone of the real Xbox Series controller (045E:0B12) configuration
+// descriptor, captured from the donor via gip_capture. 3 interfaces:
+//   IF0 = GIP data (interrupt EP 0x82 IN / 0x02 OUT)   <- the one we drive
+//   IF1 = audio    (isochronous, alt1)                  <- declared, not serviced yet
+//   IF2 = bulk data                                     <- declared, not serviced yet
+// The Xbox validates this topology; a single-interface device gets rejected.
+// Single GIP data interface — the stock TinyUSB vendor class can configure this
+// (a PC accepts it). The real controller's full 3-interface topology needs a
+// custom device class driver (TODO) for the Xbox to accept it.
+#define CFG_LEN (9 + 9 + 7 + 7)
 static const uint8_t desc_configuration[] = {
-    // Configuration: 1 interface, bus-powered, 500mA
-    9, TUSB_DESC_CONFIGURATION,
-    U16_TO_U8S_LE(CONFIG_TOTAL_LEN), 1, 1, 0, 0x80, 250,
-
-    // Interface 0: vendor 0xFF / 0x47 / 0xD0, 2 endpoints
-    9, TUSB_DESC_INTERFACE, 0, 0, 2, 0xFF, 0x47, 0xD0, 0,
-
-    // Endpoint IN 0x82, interrupt, 64B, interval 1 (1ms poll -> lower latency)
-    7, TUSB_DESC_ENDPOINT, EP_GIP_IN, TUSB_XFER_INTERRUPT, U16_TO_U8S_LE(EP_SIZE), 1,
-
-    // Endpoint OUT 0x02, interrupt, 64B, interval 1
-    7, TUSB_DESC_ENDPOINT, EP_GIP_OUT, TUSB_XFER_INTERRUPT, U16_TO_U8S_LE(EP_SIZE), 1,
+    0x09, 0x02, (uint8_t)(CFG_LEN & 0xFF), (uint8_t)(CFG_LEN >> 8), 0x01, 0x01, 0x00, 0xA0, 0xFA,
+    0x09, 0x04, 0x00, 0x00, 0x02, 0xFF, 0x47, 0xD0, 0x00, // IF0: GIP data, 2 endpoints
+    0x07, 0x05, 0x82, 0x03, 0x40, 0x00, 0x01,             //   EP 0x82 IN  interrupt 64, 1ms
+    0x07, 0x05, 0x02, 0x03, 0x40, 0x00, 0x01,             //   EP 0x02 OUT interrupt 64, 1ms
 };
 
 const uint8_t *tud_descriptor_configuration_cb(uint8_t index) {
     (void) index;
+    g_cfg_desc_reqs++;
     return desc_configuration;
 }
 

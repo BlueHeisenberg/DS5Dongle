@@ -284,10 +284,11 @@ int main() {
             p_ds = g_ds_reports; p_ctrl = g_ctrl_in;
             // Rates tell us the latency budget: DS report interval + controller
             // (input carrier) poll interval + 1ms device poll.
-            printf("[pt] console=%d ctrl=%d ds=%d | DS %luHz (%lums)  CTRL %luHz (%lums)  loop-fast\n",
+            extern volatile uint32_t g_dev_desc_reqs, g_cfg_desc_reqs;
+            printf("[pt] console=%d ctrl=%d ds=%d | DS %luHz CTRL %luHz | descReq dev=%lu cfg=%lu\n",
                    g_console_up, g_ctrl_up, ds_live,
-                   (unsigned long) ds_hz,   (unsigned long) (ds_hz ? 1000 / ds_hz : 0),
-                   (unsigned long) ctrl_hz, (unsigned long) (ctrl_hz ? 1000 / ctrl_hz : 0));
+                   (unsigned long) ds_hz, (unsigned long) ctrl_hz,
+                   (unsigned long) g_dev_desc_reqs, (unsigned long) g_cfg_desc_reqs);
         }
         // Status panel — connection info only, 1 Hz (cheap; the ~12 ms blocking
         // I2C write stays well out of the relay hot path).
